@@ -1,0 +1,110 @@
+version: '3.9'
+
+services:
+
+  # ── MySQL ──────────────────────────────────────────────────────────────────
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: secret
+      MYSQL_DATABASE: bkash_wallet
+      MYSQL_USER: bkash
+      MYSQL_PASSWORD: secret
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+
+  # ── Gotenberg (PDF microservice) ───────────────────────────────────────────
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    command:
+      - "gotenberg"
+      - "--chromium-disable-routes=false"
+
+  # ── Laravel Backend ────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/var/www/html
+      - /var/www/html/vendor
+    environment:
+      APP_ENV: local
+      APP_KEY: base64:CHANGEME32bytesKeyGoesHere123456=
+      APP_DEBUG: "true"
+      APP_URL: http://localhost:8000
+      FRONTEND_URL: http://localhost:5173
+      DB_CONNECTION: mysql
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_DATABASE: bkash_wallet
+      DB_USERNAME: bkash
+      DB_PASSWORD: secret
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CACHE_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      SESSION_DRIVER: redis
+      GOTENBERG_URL: http://gotenberg:3000
+      BKASH_BASE_URL: https://tokenized.sandbox.bka.sh/v1.2.0-beta
+      BKASH_APP_KEY: "${BKASH_APP_KEY}"
+      BKASH_APP_SECRET: "${BKASH_APP_SECRET}"
+      BKASH_USERNAME: "${BKASH_USERNAME}"
+      BKASH_PASSWORD: "${BKASH_PASSWORD}"
+      BKASH_CALLBACK_URL: http://localhost:8000/api/bkash/payment/callback
+      BKASH_AGREEMENT_CALLBACK_URL: http://localhost:8000/api/bkash/agreement/callback
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "
+        composer install --no-interaction &&
+        php artisan key:generate --force &&
+        php artisan migrate --force &&
+        php artisan db:seed --force &&
+        php artisan serve --host=0.0.0.0 --port=8000
+      "
+
+  # ── Vue Frontend (dev) ─────────────────────────────────────────────────────
+  frontend:
+    image: node:20-alpine
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000/api
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    depends_on:
+      - backend
+
+volumes:
+  db_data:
